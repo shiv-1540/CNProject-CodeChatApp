@@ -1,113 +1,131 @@
-import bcrypt from 'bcrypt';
-import dotenv from 'dotenv';
-dotenv.config({ path: './.env' });
+const express = require('express');
+const http = require('http');
+const bodyparser = require('body-parser');
+const path = require('path');
+const cors = require('cors');
+require('dotenv').config();
+const port = process.env.PORT || 3000;
 
-import express from 'express';
-import cors from 'cors';
-import path from 'path';
-import mongoose from 'mongoose';  // Use import for mongoose
-import bodyparser from 'body-parser';
-import http from 'http';
-import User from './models/userSchema.js';  // ESM uses full path with .js
-import connectDB from './database.js';
+const userAuthen = require('./routes/AuthenRoutes');
+const projectRoom = require('./routes/ProjectRoomRoute');
+const database = require('./database/databaseSetup');
 
 const app = express();
 const server = http.createServer(app);
-//const bcrypt = require('bcryptjs');  // Use bcrypt for password hashing
-const port = process.env.PORT || 3000;  // Use PORT from environment variables
+const {Server} = require('socket.io');
+const io = new Server(server, {
+    cors: {
+      origin: "http://localhost:5173",
+      methods: ["GET", "POST"],
+    },
+  });
+
+// socketio setup:
+// use to track which user got which socket id, so that each has different socket id 
+const userSocketMap = {};
+
+const getAllConnectedClients = (roomId) => {
+    return Array.from(io.sockets.adapter.rooms.get(roomId) || []).map((socketId) => {
+        return {
+            socketId,
+            username: userSocketMap[socketId],
+        }
+    }); // map type
+}
+
+// socket connection - server side
+// same hume client side banana h
+io.on("connection", (socket) => {
+    console.log("New client connected", socket.id);
+  
+    // Handle room joining
+    socket.on("join", ({ roomId, username }) => {
+      socket.join(roomId);
+      userSocketMap[socket.id] = username;
+  
+      const clients = getAllConnectedClients(roomId);
+      clients.forEach(({ socketId }) => {
+        io.to(socketId).emit("joined", { clients, username, socketId: socket.id });
+      });
+    });
+  
+    // Handle code-change event
+    socket.on("code-change", ({ roomId, code }) => {
+      socket.to(roomId).emit("code-change", { roomId, code });
+    });
+  
+    // Handle disconnect
+    socket.on("disconnecting", () => {
+      const rooms = [...socket.rooms];
+      rooms.forEach((roomId) => {
+        socket.in(roomId).emit("disconnected", {
+          socketId: socket.id,
+          username: userSocketMap[socket.id]
+        });
+      });
+      delete userSocketMap[socket.id];
+    });
+  });
+  
+
+
+  
+//   // Socket.io connection setup
+//   io.on("connection", (socket) => {
+//     console.log("New client connected", socket.id);
+  
+//     // Handle room joining
+//     socket.on("join", ({ roomId, username }) => {
+//       socket.join(roomId);
+//       io.to(roomId).emit("joined", { username, socketId: socket.id });
+//       console.log(`${username} joined room ${roomId}`);
+//     });
+  
+//     // Handle code-change event
+//     socket.on("code-change", ({ roomId, code }) => {
+//       socket.broadcast.to(roomId).emit("code-change", { code });
+//     });
+  
+//     // Handle disconnect
+//     socket.on("disconnect", () => {
+//       console.log("Client disconnected", socket.id);
+//     });
+//   });
+  
 
 
 
-app.use(cors({
-     credentials: true
- }
-));
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// Middlewares
+app.use(cors());
 app.use(bodyparser.json());
 app.use(bodyparser.urlencoded({ extended: true }));
-//app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public')));
 
-// Connect to MongoDB
-connectDB();  // This will establish the connection
+// Routes
+app.use('/userAuthen', userAuthen);
+app.use('/projectRoom', projectRoom);
 
-
-app.get('/', (req, res) => {
-    res.status(200).send('<h1>Hello World</h1>');
+// Error handling middleware (optional)
+app.use((err, req, res, next) => {
+    console.error(err.stack);
+    res.status(500).send('Something broke!');
 });
 
-// Registration route
-app.post('/registration', async (req, res) => {
-    const { Name,username, email, password} = req.body;
-
-    // Validate email and password
-    if (!email || !password || !Name ||!username) {
-        return res.status(400).json({ message: 'Name, email, username and password are required' });
-    }
-
-    try {
-        // Check if user already exists
-        const existingUser = await User.findOne({ email });
-        if (existingUser) {
-            return res.status(400).json({ message: 'User already exists' });
-        }
-
-        // Hash the password before saving
-       // const hashedPassword = await bcrypt.hash(password, 10);
-
-        // Create new user
-        const newUser = new User({
-            Name,
-            username,
-            email,
-            password
-        });
-
-        const savedUser = await newUser.save();
-        res.status(201).json({ message: 'Registration successful', user: savedUser });
-    } catch (err) {
-        res.status(500).send(`Error occurred: ${err.message}`);
-    }
-});
-
-
-
-// Sign-in route
-app.post('/signin', async (req, res) => {
-    const { username, password } = req.body;
-
-    // Validate input
-    if (!username || !password) {
-        return res.status(400).json({ message: 'Username and password are required' });
-    }
-
-    try {
-        // Find user by username
-        const user = await User.findOne({ username: username });
-         console.log("From sigIn:",user);
-        // Check if user exists
-        if (user) {
-             // Compare the provided password with the stored hashed password
-        //const isMatch = await bcrypt.compare(password, user.password);
-        
-        // If the password doesn't match
-        if (password!==user.password) {
-            return res.status(401).json({ message: 'Invalid username or password' });
-        }
-
-        // If credentials are valid, return success response
-        res.status(200).json({ message: 'Sign-in successful', userId: user._id });
-    } 
-    else{
-        return res.status(401).json({ message: 'Invalid username or password' });
-    }
-   
-    } catch (err) {
-        res.status(500).send(`Error occurred: ${err.message}`);
-    }
-       
-
-       
-});
-
+// Start server
 server.listen(port, () => {
-    console.log(`Listening on port ${port}`);
+    console.log('Server is running on port 3000');
 });
